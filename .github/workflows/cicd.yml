@@ -1,0 +1,58 @@
+name: CI/CD Pipeline to K3s and AWS ECR
+
+on:
+  push:
+    branches: [ "main" ]
+
+env:
+  AWS_REGION: eu-north-1           # Change to your preferred AWS region
+  ECR_REPOSITORY: project-test/backend # Name of your ECR repository
+  IMAGE_NAME: project-test/backend
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 1. Configure AWS Credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 2. Log in to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 3. Build, Tag, and Push Docker Image to ECR
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$ECR_REPOSITORY:latest
+
+      # 4. Deploy/Update App on K3s Node via SSH
+      - name: Deploy to K3s via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.K3S_HOST_IP }}
+          username: ubuntu
+          key: ${{ secrets.K3S_SSH_PRIVATE_KEY }}
+          script: |
+            # Pull latest image and force K3s to update the deployment
+            aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 678080238090.dkr.ecr.eu-north-1.amazonaws.com
+            
+            # Update the deployment manifest with the new image tag and apply
+            export IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
+            
+            # If using a raw deployment file on the server:
+            kubectl set image deployment/demo-app demo-app=$IMAGE_URI --record=true || \
+            kubectl apply -f https://raw.githubusercontent.com/... # or pull your manifest repo
