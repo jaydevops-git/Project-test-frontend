@@ -40,19 +40,27 @@ jobs:
           docker push $REGISTRY/$ECR_REPOSITORY:latest
 
       # 4. Deploy/Update App on K3s Node via SSH
+      - name: Get ECR Password
+        id: ecr-pass
+        run: echo "PASSWORD=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})" >> $GITHUB_OUTPUT
+
       - name: Deploy to K3s via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          ECR_PASSWORD: ${{ steps.ecr-pass.outputs.PASSWORD }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
         with:
           host: ${{ secrets.K3S_HOST_IP }}
           username: ubuntu
           key: ${{ secrets.K3S_SSH_PRIVATE_KEY }}
+          envs: ECR_PASSWORD,ECR_REGISTRY,IMAGE_URI
           script: |
-            # Pull latest image and force K3s to update the deployment
-            aws ecr get-login-password --region eu-north-1 | docker login --username AWS --password-stdin 678080238090.dkr.ecr.eu-north-1.amazonaws.com
-            
-            # Update the deployment manifest with the new image tag and apply
-            export IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
-            
-            # If using a raw deployment file on the server:
-            kubectl set image deployment/demo-app demo-app=$IMAGE_URI --record=true || \
-            kubectl apply -f https://raw.githubusercontent.com/... # or pull your manifest repo
+            kubectl delete secret ecr-registry-secret --ignore-not-found
+            kubectl create secret docker-registry ecr-registry-secret \
+              --docker-server=$ECR_REGISTRY \
+              --docker-username=AWS \
+              --docker-password=$ECR_PASSWORD
+
+            kubectl set image deployment/demo-app demo-app=$IMAGE_URI
+            kubectl rollout status deployment/demo-app
